@@ -23,8 +23,9 @@ def main():
         wordle_solver = WordleSolver(words)
         wordle_solver.interactive_solve()
     elif args.mode == 'simulate':
-        wordle_solver = WordleSolver(words, logging_level=logging.ERROR, max_num_process=4)
-        wordle_solver.test_performance()
+        wordle_solver = WordleSolver(words, logging_level=logging.ERROR, max_num_process=4, build_cache=False)
+        # wordle_solver.test_performance("raise")
+        wordle_solver.test_performance_loop("raise")
     return 0
 
 if __name__ == '__main__':

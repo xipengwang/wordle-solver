@@ -50,6 +50,19 @@ def GetWordStatus(*, guess_word : str, true_word : str):
 def StatusToString(guess_word_status : List[LetterStatus], seperator=' '):
     return seperator.join([status.name for status in guess_word_status])
 
+def StatusToDigitString(guess_word_status : List[LetterStatus]):
+    digit_str = ''
+    for status in guess_word_status:
+        if status == LetterStatus.Yes:
+            digit_str += '0'
+        elif status == LetterStatus.No:
+            digit_str += '2'
+        elif status == LetterStatus.Exist:
+            digit_str += '1'
+        else:
+            assert False
+    return digit_str
+
 
 def DigitStringToWordStatus(status_str):
     word_status = []
@@ -64,12 +77,12 @@ def DigitStringToWordStatus(status_str):
             assert False, f"unrecognized number string {s} in {status_str}."
     return word_status
 
-
-def CalculateWordScore(*, word_list : List[str], guess_word : str, get_word_status_func):
+# TODO: Speed up the loop...
+def CalculateWordScoreHelper(*, word_list : List[str], guess_word : str, get_word_status_func, depth):
     status_frequency_dict = {}
     for word in word_list:
         status = get_word_status_func(guess_word=guess_word, true_word=word)
-        status_str = StatusToString(status, '-')
+        status_str = StatusToDigitString(status)
         if status_str in status_frequency_dict:
             status_frequency_dict[status_str] += 1.0
         else:
@@ -80,15 +93,31 @@ def CalculateWordScore(*, word_list : List[str], guess_word : str, get_word_stat
     for (k, v) in status_frequency_dict.items():
         p = v / len(word_list)
         p_sum += p
-        expected_entropy -= p * math.log2(p)
+        if depth == 1:
+            info = -math.log2(p)
+        else:
+            new_word_list = PruneWordList(curr_word_list=word_list, guess_word=guess_word,
+                                          guess_word_status=DigitStringToWordStatus(k),
+                                          get_word_status_func=get_word_status_func)
+            ranked_candidates = GenerateRankedCandidates(word_list=new_word_list,
+                                                         get_word_status_func=get_word_status_func,
+                                                         depth=depth-1)
+            info = ranked_candidates[0][1]
+
+        expected_entropy += p*info
     return expected_entropy
 
+def CalculateWordScore(*, word_list : List[str], guess_word : str, get_word_status_func, depth):
+    return CalculateWordScoreHelper(word_list=word_list, guess_word=guess_word,
+                                    get_word_status_func=get_word_status_func,
+                                    depth=depth)
 
-@timer_func
-def GenerateRankedCandidates(word_list : List[str], get_word_status_func):
+# TODO: Two nested loop here could be processed in parallel...
+def GenerateRankedCandidates(word_list : List[str], get_word_status_func, depth=1):
     ranked_candidates = []
     for i, word in enumerate(word_list):
-        score = CalculateWordScore(word_list=word_list, guess_word=word, get_word_status_func=get_word_status_func)
+        score = CalculateWordScore(word_list=word_list, guess_word=word, get_word_status_func=get_word_status_func,
+                                   depth=depth)
         ranked_candidates.append((word, score))
         if i % 100 == 0:
             logging.debug(f"Processing {i}/{len(word_list)} word...")
@@ -137,7 +166,7 @@ class GetWordStatusWithCache(object):
 
 
 class WordleSolver():
-    def __init__(self, word_list : List[str], logging_level = logging.INFO, max_num_process=8):
+    def __init__(self, word_list : List[str], logging_level = logging.INFO, max_num_process=8, build_cache=True):
         logging.basicConfig()
         logging.getLogger().setLevel(logging_level)
         logging.info("Initializing wordle solver...")
@@ -145,8 +174,11 @@ class WordleSolver():
         self.word_list = word_list
         self.word_length = WordLength(word_list)
         self.max_num_process = max_num_process
-        print("Building cache....")
-        self.get_word_status_func = GetWordStatusWithCache(word_list)
+        if build_cache:
+            print("Building cache....")
+            self.get_word_status_func = GetWordStatusWithCache(word_list)
+        else:
+            self.get_word_status_func = GetWordStatus
 
     def simulate(self, *, true_word : str, max_steps : int, first_guess=None):
         assert len(true_word) == self.word_length
@@ -199,6 +231,21 @@ class WordleSolver():
             average += i * stats[i] / float(len(self.word_list));
         print(f"\n average performance: {average}")
 
+
+    def test_performance_loop(self, first_guess="raise"):
+        stats = {}
+        for i, word in enumerate(self.word_list):
+            # print(f"Process {i} / {len(self.word_list)}")
+            steps = self.simulate(true_word=word, max_steps=100, first_guess='raise')
+            if steps in stats:
+                stats[steps] += 1.0
+            else:
+                stats[steps] = 1.0
+        average = 0.0
+        for i in sorted(stats) :
+            print ((i, stats[i]), end =" ")
+            average += i * stats[i] / float(len(self.word_list));
+        print(f"\n average performance: {average}")
 
     def interactive_solve(self, true_word=None, max_steps=10):
         ranked_candidates = GenerateRankedCandidates(word_list=self.word_list,
