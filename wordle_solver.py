@@ -3,6 +3,23 @@ from typing import List
 import copy
 import logging
 import math
+from time import time
+
+from multiprocessing import Pool
+import functools
+
+
+def timer_func(func):
+    # This function shows the execution time of
+    # the function object passed
+    def wrap_func(*args, **kwargs):
+        t1 = time()
+        result = func(*args, **kwargs)
+        t2 = time()
+        print(f'Function {func.__name__!r} executed in {(t2-t1):.4f}s')
+        return result
+    return wrap_func
+
 
 class LetterStatus(Enum):
     Yes = 0
@@ -48,10 +65,10 @@ def DigitStringToWordStatus(status_str):
     return word_status
 
 
-def CalculateWordScore(*, word_list : List[str], guess_word : str):
+def CalculateWordScore(*, word_list : List[str], guess_word : str, get_word_status_func):
     status_frequency_dict = {}
     for word in word_list:
-        status = GetWordStatus(guess_word=guess_word, true_word=word)
+        status = get_word_status_func(guess_word=guess_word, true_word=word)
         status_str = StatusToString(status, '-')
         if status_str in status_frequency_dict:
             status_frequency_dict[status_str] += 1.0
@@ -67,10 +84,11 @@ def CalculateWordScore(*, word_list : List[str], guess_word : str):
     return expected_entropy
 
 
-def GenerateRankedCandidates(word_list : List[str]):
+@timer_func
+def GenerateRankedCandidates(word_list : List[str], get_word_status_func):
     ranked_candidates = []
     for i, word in enumerate(word_list):
-        score = CalculateWordScore(word_list=word_list, guess_word=word)
+        score = CalculateWordScore(word_list=word_list, guess_word=word, get_word_status_func=get_word_status_func)
         ranked_candidates.append((word, score))
         if i % 100 == 0:
             logging.debug(f"Processing {i}/{len(word_list)} word...")
@@ -82,68 +100,113 @@ def AllYes(guess_word_status):
     return all([status == LetterStatus.Yes for status in guess_word_status])
 
 
-def PruneWordList(*, curr_word_list, guess_word, guess_word_status):
+def PruneWordList(*, curr_word_list, guess_word, guess_word_status, get_word_status_func):
     new_word_list = []
     for word in curr_word_list:
-        word_status = GetWordStatus(guess_word=guess_word, true_word=word)
+        word_status = get_word_status_func(guess_word=guess_word, true_word=word)
         if StatusToString(word_status) == StatusToString(guess_word_status):
             new_word_list.append(word)
     assert len(new_word_list)!=0, "Sorry, our word list doesn't contain the True Word..."
     return new_word_list
 
 
+class Simulater(object):
+    def __init__(self, wordle_solver, first_guess):
+        self.wordle_solver = wordle_solver
+        self.first_guess = first_guess
+    def __call__(self, true_word):
+        return self.wordle_solver.simulate(true_word=true_word, max_steps=100, first_guess=self.first_guess)
+
+
+@timer_func
+class GetWordStatusWithCache(object):
+    def __init__(self, word_list):
+        self.word_list = word_list
+        self.status_cache = {}
+        for guess_word in word_list:
+            if guess_word in self.status_cache:
+                guess_word_status_dict = self.status_cache[guess_word]
+            else:
+                self.status_cache[guess_word] = {}
+                guess_word_status_dict = self.status_cache[guess_word]
+            for true_word in word_list:
+                    if not (true_word in guess_word_status_dict):
+                        guess_word_status_dict[true_word] = GetWordStatus(guess_word=guess_word, true_word=true_word)
+    def __call__(self, guess_word, true_word):
+        return self.status_cache[guess_word][true_word]
+
+
 class WordleSolver():
-    def __init__(self, word_list : List[str], logging_level = logging.INFO):
+    def __init__(self, word_list : List[str], logging_level = logging.INFO, max_num_process=8):
         logging.basicConfig()
         logging.getLogger().setLevel(logging_level)
         logging.info("Initializing wordle solver...")
         logging.info(f"There are {len(word_list)} word in the word list!")
         self.word_list = word_list
         self.word_length = WordLength(word_list)
+        self.max_num_process = max_num_process
+        print("Building cache....")
+        self.get_word_status_func = GetWordStatusWithCache(word_list)
 
     def simulate(self, *, true_word : str, max_steps : int, first_guess=None):
         assert len(true_word) == self.word_length
         curr_word_list = self.word_list
         if first_guess is None:
-            ranked_candidates = GenerateRankedCandidates(word_list=curr_word_list)
+            ranked_candidates = GenerateRankedCandidates(word_list=curr_word_list,
+                                                         get_word_status_func=self.get_word_status_func)
             (top_rank_word, score) = ranked_candidates[0]
         else:
             top_rank_word = first_guess
             score = -1
         logging.info(f"Top word is <{top_rank_word}> with a score {score}.")
-        word_status = GetWordStatus(guess_word=top_rank_word, true_word=true_word)
+        word_status = self.get_word_status_func(guess_word=top_rank_word, true_word=true_word)
         logging.info(f"Word status: ({true_word} - {top_rank_word}):")
         logging.info(StatusToString(word_status))
         if AllYes(word_status):
             return 1
         curr_word_list = PruneWordList(curr_word_list=curr_word_list,
-                                       guess_word=top_rank_word, guess_word_status=word_status)
+                                       guess_word=top_rank_word, guess_word_status=word_status,
+                                       get_word_status_func=self.get_word_status_func)
         for step in range(1, max_steps):
             logging.info(f"\n.......Step {step}......")
-            ranked_candidates = GenerateRankedCandidates(word_list=curr_word_list)
+            ranked_candidates = GenerateRankedCandidates(word_list=curr_word_list,
+                                                         get_word_status_func=self.get_word_status_func)
             (top_rank_word, score) = ranked_candidates[0]
             logging.info(f"Top word is <{top_rank_word}> with a score {score}.")
-            word_status = GetWordStatus(guess_word=top_rank_word, true_word=true_word)
+            word_status = self.get_word_status_func(guess_word=top_rank_word, true_word=true_word)
             logging.info(f"Word status: ({true_word} - {top_rank_word}): " + StatusToString(word_status))
             if AllYes(word_status):
                 return step + 1
             curr_word_list = PruneWordList(curr_word_list=curr_word_list,
-                                           guess_word=top_rank_word, guess_word_status=word_status)
+                                           guess_word=top_rank_word, guess_word_status=word_status,
+                                           get_word_status_func=self.get_word_status_func)
         return -1
 
-    def test_performance(self):
-        result = {}
-        for i, word in enumerate(self.word_list):
-            print(f"Process {i} / {len(self.word_list)}")
-            steps = self.simulate(true_word=word, max_steps=100, first_guess='raise')
-            if steps in result:
-                result[steps] += 1.0
+
+    @timer_func
+    def test_performance(self, first_guess='raise'):
+        stats = {}
+        with Pool(self.max_num_process) as p:
+            results = p.map(Simulater(self, first_guess), self.word_list)
+        for steps in results:
+            if steps in stats:
+                stats[steps] += 1.0
             else:
-                result[steps] = 1.0
-        print(result)
+                stats[steps] = 1.0
+        average = 0.0
+        for i in sorted(stats) :
+            print ((i, stats[i]), end =" ")
+            average += i * stats[i] / float(len(self.word_list));
+        print(f"\n average performance: {average}")
 
 
     def interactive_solve(self, true_word=None, max_steps=10):
+        ranked_candidates = GenerateRankedCandidates(word_list=self.word_list,
+                                                     get_word_status_func=self.get_word_status_func)
+        (top_rank_word, score) = ranked_candidates[0]
+        print(f"Top word is <{top_rank_word}> with a score {score}.")
+
+
         curr_word_list = self.word_list
         for step in range(max_steps):
             logging.info(f"\n.......Step {step}......")
@@ -154,12 +217,15 @@ class WordleSolver():
                 assert len(status_str) == self.word_length
                 word_status = DigitStringToWordStatus(status_str)
             else:
-                word_status = GetWordStatus(guess_word=guess_word, true_word=true_word)
+                word_status = self.get_word_status_func(guess_word=guess_word, true_word=true_word)
             if AllYes(word_status):
                 print("Success!")
                 return step+1
             curr_word_list = PruneWordList(curr_word_list=curr_word_list,
-                                           guess_word=guess_word, guess_word_status=word_status)
-            ranked_candidates = GenerateRankedCandidates(word_list=curr_word_list)
+                                           guess_word=guess_word,
+                                           guess_word_status=word_status,
+                                           get_word_status_func=self.get_word_status_func)
+            ranked_candidates = GenerateRankedCandidates(word_list=curr_word_list,
+                                                         get_word_status_func=self.get_word_status_func)
             (top_rank_word, score) = ranked_candidates[0]
             print(f"Top word is <{top_rank_word}> with a score {score}.")

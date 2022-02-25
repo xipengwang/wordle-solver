@@ -23,7 +23,7 @@ def main():
         wordle_solver = WordleSolver(words)
         wordle_solver.interactive_solve()
     elif args.mode == 'simulate':
-        wordle_solver = WordleSolver(words, logging_level=logging.ERROR)
+        wordle_solver = WordleSolver(words, logging_level=logging.ERROR, max_num_process=4)
         wordle_solver.test_performance()
     return 0
 
