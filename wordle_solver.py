@@ -84,25 +84,31 @@ def CalculateWordScoreHelper(*, word_list : List[str], guess_word : str, get_wor
         status = get_word_status_func(guess_word=guess_word, true_word=word)
         status_str = StatusToDigitString(status)
         if status_str in status_frequency_dict:
-            status_frequency_dict[status_str] += 1.0
+            status_frequency_dict[status_str][0] += 1.0
+            status_frequency_dict[status_str][1].append(word)
         else:
-            status_frequency_dict[status_str] = 1.0
+            status_frequency_dict[status_str] = [1.0, [word]]
 
     expected_entropy = 0
     p_sum = 0
     for (k, v) in status_frequency_dict.items():
-        p = v / len(word_list)
+        p = v[0] / len(word_list)
         p_sum += p
         if depth == 1:
             info = -math.log2(p)
         else:
-            new_word_list = PruneWordList(curr_word_list=word_list, guess_word=guess_word,
-                                          guess_word_status=DigitStringToWordStatus(k),
-                                          get_word_status_func=get_word_status_func)
-            ranked_candidates = GenerateRankedCandidates(word_list=new_word_list,
-                                                         get_word_status_func=get_word_status_func,
-                                                         depth=depth-1)
-            info = ranked_candidates[0][1]
+            new_word_list = v[1]
+            #new_word_list = PruneWordList(curr_word_list=word_list, guess_word=guess_word,
+            #                              guess_word_status=DigitStringToWordStatus(k),
+            #                              get_word_status_func=get_word_status_func)
+            assert len(new_word_list) > 0
+            if len(new_word_list) == 1:
+                info = 0
+            else:
+                ranked_candidates = GenerateRankedCandidates(word_list=new_word_list,
+                                                             get_word_status_func=get_word_status_func,
+                                                             depth=depth-1)
+                info = ranked_candidates[0][1]
 
         expected_entropy += p*info
     return expected_entropy
@@ -144,7 +150,7 @@ class Simulater(object):
         self.wordle_solver = wordle_solver
         self.first_guess = first_guess
     def __call__(self, true_word):
-        return self.wordle_solver.simulate(true_word=true_word, max_steps=100, first_guess=self.first_guess)
+        return (self.wordle_solver.simulate(true_word=true_word, max_steps=100, first_guess=self.first_guess), true_word)
 
 
 @timer_func
@@ -220,16 +226,19 @@ class WordleSolver():
         stats = {}
         with Pool(self.max_num_process) as p:
             results = p.map(Simulater(self, first_guess), self.word_list)
-        for steps in results:
+        for (steps, word) in results:
             if steps in stats:
-                stats[steps] += 1.0
+                stats[steps].append(word)
             else:
-                stats[steps] = 1.0
+                stats[steps] = [word]
         average = 0.0
         for i in sorted(stats) :
-            print ((i, stats[i]), end =" ")
-            average += i * stats[i] / float(len(self.word_list));
+            print ((i, len(stats[i])), end =" ")
+            average += i * len(stats[i]) / float(len(self.word_list));
         print(f"\n average performance: {average}")
+        for i in range(6, 10):
+            if i in stats:
+                print(f"steps<{i}>: {stats[i]}")
 
 
     def test_performance_loop(self, first_guess="raise"):
@@ -248,10 +257,10 @@ class WordleSolver():
         print(f"\n average performance: {average}")
 
     def interactive_solve(self, true_word=None, max_steps=10):
-        ranked_candidates = GenerateRankedCandidates(word_list=self.word_list,
-                                                     get_word_status_func=self.get_word_status_func)
-        (top_rank_word, score) = ranked_candidates[0]
-        print(f"Top word is <{top_rank_word}> with a score {score}.")
+        #ranked_candidates = GenerateRankedCandidates(word_list=self.word_list,
+        #                                             get_word_status_func=self.get_word_status_func)
+        #(top_rank_word, score) = ranked_candidates[0]
+        #print(f"Top word is <{top_rank_word}> with a score {score}.")
 
 
         curr_word_list = self.word_list
@@ -265,6 +274,7 @@ class WordleSolver():
                 word_status = DigitStringToWordStatus(status_str)
             else:
                 word_status = self.get_word_status_func(guess_word=guess_word, true_word=true_word)
+            print(StatusToString(word_status))
             if AllYes(word_status):
                 print("Success!")
                 return step+1
@@ -275,4 +285,4 @@ class WordleSolver():
             ranked_candidates = GenerateRankedCandidates(word_list=curr_word_list,
                                                          get_word_status_func=self.get_word_status_func)
             (top_rank_word, score) = ranked_candidates[0]
-            print(f"Top word is <{top_rank_word}> with a score {score}.")
+            print(f"Top word is <{top_rank_word}>[{len(curr_word_list)}] with a score {score}.")
